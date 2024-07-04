@@ -15,3 +15,8 @@ spring:
             assertingparty:
               metadata-uri: "classpath:metadata/metadata-idp-okta.xml"
 
+logging:
+  level:
+    org:
+      springframework:
+        security: DEBUG

@@ -1,41 +1,70 @@
 package com.sso.okta.demo;
 
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.core.convert.converter.Converter;
+import org.springframework.security.authentication.ProviderManager;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
-import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
-import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
-import org.springframework.security.saml2.provider.service.metadata.OpenSamlMetadataResolver;
-import org.springframework.security.saml2.provider.service.registration.RelyingPartyRegistrationRepository;
-import org.springframework.security.saml2.provider.service.web.DefaultRelyingPartyRegistrationResolver;
-import org.springframework.security.saml2.provider.service.web.Saml2MetadataFilter;
-import org.springframework.security.saml2.provider.service.web.authentication.Saml2WebSsoAuthenticationFilter;
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.saml2.provider.service.authentication.OpenSaml4AuthenticationProvider;
+import org.springframework.security.saml2.provider.service.authentication.OpenSaml4AuthenticationProvider.ResponseToken;
+import org.springframework.security.saml2.provider.service.authentication.Saml2AuthenticatedPrincipal;
+import org.springframework.security.saml2.provider.service.authentication.Saml2Authentication;
 import org.springframework.security.web.SecurityFilterChain;
 
 import static org.springframework.security.config.Customizer.withDefaults;
 
 @Configuration
-@EnableWebSecurity
 public class SecurityConfig {
 
-    private final RelyingPartyRegistrationRepository relyingPartyRegistrationRepository;
-
     @Bean
-    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
-        DefaultRelyingPartyRegistrationResolver relyingPartyRegistrationResolver = new DefaultRelyingPartyRegistrationResolver(
-            this.relyingPartyRegistrationRepository);
-        Saml2MetadataFilter filter = new Saml2MetadataFilter(relyingPartyRegistrationResolver, new OpenSamlMetadataResolver());
+    SecurityFilterChain configure(HttpSecurity http) throws Exception {
 
-        http.csrf(AbstractHttpConfigurer::disable)
-            .authorizeHttpRequests(authorize -> authorize.anyRequest()
-                .authenticated())
-            .saml2Login(withDefaults())
-            .saml2Logout(withDefaults())
-            .addFilterBefore(filter, Saml2WebSsoAuthenticationFilter.class);
+        OpenSaml4AuthenticationProvider authenticationProvider = new OpenSaml4AuthenticationProvider();
+        authenticationProvider.setResponseAuthenticationConverter(groupsConverter());
+
+
+        http
+                .authorizeHttpRequests(authorize -> authorize
+                        .requestMatchers("/admin").hasRole("ADMIN")
+                        .anyRequest().authenticated()
+                )
+                .saml2Login(saml2 -> saml2
+                        .authenticationManager(new ProviderManager(authenticationProvider))
+                )
+                .saml2Logout(withDefaults());
+
+
         return http.build();
     }
 
-    public SecurityConfig(RelyingPartyRegistrationRepository relyingPartyRegistrationRepository) {
-        this.relyingPartyRegistrationRepository = relyingPartyRegistrationRepository;
+    private Converter<OpenSaml4AuthenticationProvider.ResponseToken, Saml2Authentication> groupsConverter() {
+
+        Converter<ResponseToken, Saml2Authentication> delegate =
+                OpenSaml4AuthenticationProvider.createDefaultResponseAuthenticationConverter();
+
+        return (responseToken) -> {
+            Saml2Authentication authentication = delegate.convert(responseToken);
+            Saml2AuthenticatedPrincipal principal = (Saml2AuthenticatedPrincipal) authentication.getPrincipal();
+            List<String> groups = principal.getAttribute("groups");
+            Set<GrantedAuthority> authorities = new HashSet<>();
+            if (groups != null) {
+                groups.stream().forEach(group -> {
+                    if ("Admin".equals(group)) {
+                        authorities.add(new SimpleGrantedAuthority("ROLE_ADMIN"));
+                    } else {
+                        authorities.add(new SimpleGrantedAuthority(group));
+                    }
+                });
+            } else {
+                authorities.addAll(authentication.getAuthorities());
+            }
+            return new Saml2Authentication(principal, authentication.getSaml2Response(), authorities);
+        };
     }
 }
